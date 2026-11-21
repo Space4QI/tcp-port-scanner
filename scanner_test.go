@@ -23,6 +23,12 @@ func TestNewValid(t *testing.T) {
 	if scanner == nil {
 		t.Fatal("expected non-nil scanner, but got nil")
 	}
+	if scanner.maxConcurrency != 10 {
+		t.Fatalf("expected 10, got %d", scanner.maxConcurrency)
+	}
+	if scanner.timeout != time.Second {
+		t.Fatalf("expected time.Second, got %s", scanner.timeout)
+	}
 }
 
 func TestNewInvalidTimeout(t *testing.T) {
