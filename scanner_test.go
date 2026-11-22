@@ -46,6 +46,7 @@ func TestNewInvalidTimeout(t *testing.T) {
 }
 
 func TestValidatePortOpen(t *testing.T) {
+	ip := net.ParseIP("127.0.0.1")
 	scanner, err := New(10, 1*time.Second)
 	if err != nil {
 		t.Fatalf("failed to create scanner: %v", err)
@@ -59,13 +60,18 @@ func TestValidatePortOpen(t *testing.T) {
 
 	port := uint16(tcpAddr.Port)
 
-	result := scanner.validatePort(context.Background(), "127.0.0.1", port)
+	result := scanner.validatePort(context.Background(), "127.0.0.1", port, ip)
 	if result.State != StateOpen {
 		t.Fatalf("expected state %v, got %v", StateOpen, result.State)
+	}
+	if !result.IP.Equal(ip) {
+		t.Fatalf("address %v are not equal %v", result.IP, ip)
 	}
 }
 
 func TestValidatePortClosed(t *testing.T) {
+	ip := net.ParseIP("127.0.0.1")
+
 	scanner, err := New(10, 1*time.Second)
 	if err != nil {
 		t.Fatalf("failed to create scanner: %v", err)
@@ -83,7 +89,7 @@ func TestValidatePortClosed(t *testing.T) {
 		t.Fatalf("failed to close listener: %v", err)
 	}
 
-	result := scanner.validatePort(context.Background(), "127.0.0.1", port)
+	result := scanner.validatePort(context.Background(), "127.0.0.1", port, ip)
 	if result.State != StateClosed {
 		t.Fatalf("expected state %v, got %v, error: %v", StateClosed, result.State, result.Err)
 	}
@@ -102,26 +108,28 @@ func TestValidatePortClosed(t *testing.T) {
 }
 
 func TestValidatePortCanceled(t *testing.T) {
+	ip := net.ParseIP("127.0.0.1")
 	scanner, err := New(10, 1*time.Second)
 	if err != nil {
 		t.Fatalf("failed to create scanner: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	result := scanner.validatePort(ctx, "127.0.0.1", 8080)
+	result := scanner.validatePort(ctx, "127.0.0.1", 8080, ip)
 	if result.State != StateCanceled {
 		t.Fatalf("expected state %v, got %v, error: %v", StateCanceled, result.State, result.Err)
 	}
 }
 
 func TestValidatePortTimeout(t *testing.T) {
+	ip := net.ParseIP("127.0.0.1")
 	scanner, err := New(10, 1*time.Second)
 	if err != nil {
 		t.Fatalf("failed to create scanner: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 0)
 	defer cancel()
-	result := scanner.validatePort(ctx, "127.0.0.1", 8080)
+	result := scanner.validatePort(ctx, "127.0.0.1", 8080, ip)
 	if result.State != StateTimeout {
 		t.Fatalf("expected state %v, got %v, error: %v", StateTimeout, result.State, result.Err)
 	}
@@ -199,5 +207,37 @@ func TestResolverHostInvalidName(t *testing.T) {
 	}
 	if result != nil {
 		t.Fatalf("expected nil addresses, got %v", result)
+	}
+}
+
+func TestScanHostPort(t *testing.T) {
+	scanner, err := New(10, 1*time.Second)
+	if err != nil {
+		t.Fatalf("failed to create scanner: %v", err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create listener: %v", err)
+	}
+	tcpAddr := listener.Addr().(*net.TCPAddr)
+
+	defer listener.Close()
+
+	port := uint16(tcpAddr.Port)
+
+	result, err := scanner.scanHostPort(context.Background(), "127.0.0.1", port)
+	if err != nil {
+		t.Fatalf("failed to scan host: %v", err)
+	}
+
+	if len(result) != 1 {
+		t.Fatalf("expected addresses, got %v", result)
+	}
+	if result[0].State != StateOpen {
+		t.Fatalf("expected state %v, got %v", StateOpen, result[0].State)
+	}
+	expectedIp := net.ParseIP("127.0.0.1")
+	if !result[0].IP.Equal(expectedIp) {
+		t.Fatalf("address %v are not equal %v", result[0].IP, expectedIp)
 	}
 }
