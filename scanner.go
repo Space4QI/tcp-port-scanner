@@ -7,6 +7,8 @@ import (
 	"net"
 	"runtime"
 	"strconv"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -14,6 +16,13 @@ import (
 type Scanner struct {
 	maxConcurrency int
 	timeout        time.Duration
+}
+
+type scanJob struct {
+	host       string
+	port       uint16
+	ip         net.IP
+	resolveErr error
 }
 
 func New(maxConcurrency int, timeout time.Duration) (*Scanner, error) {
@@ -85,5 +94,161 @@ func (s *Scanner) scanHostPort(ctx context.Context, host string, port uint16) ([
 	for _, value := range addresses {
 		results = append(results, s.validatePort(ctx, host, port, value.IP))
 	}
+	return results, nil
+}
+
+func Range(start, end int) ([]uint16, error) {
+	if start < 1 || start > 65535 || end < 1 || end > 65535 {
+		return nil, errors.New("invalid port range")
+	}
+	if start > end {
+		return nil, errors.New("the start port cannot be greater than the end port")
+	}
+	ports := []uint16{}
+
+	for i := start; i <= end; i++ {
+		ports = append(ports, uint16(i))
+	}
+	return ports, nil
+}
+
+func MergePorts(groups ...[]uint16) ([]uint16, error) {
+	portsMap := make(map[uint16]bool)
+	ports := []uint16{}
+
+	for i := 0; i < len(groups); i++ {
+		for j := 0; j < len(groups[i]); j++ {
+			port := groups[i][j]
+			if port == 0 {
+				return nil, errors.New("invalid port")
+			}
+			if !portsMap[port] {
+				ports = append(ports, port)
+				portsMap[port] = true
+			}
+		}
+	}
+
+	if len(ports) == 0 {
+		return nil, errors.New("empty port list")
+	}
+	return ports, nil
+}
+
+func MergeHosts(groups ...[]string) ([]string, error) {
+	hostsMap := make(map[string]bool)
+	hosts := []string{}
+
+	for i := 0; i < len(groups); i++ {
+		for j := 0; j < len(groups[i]); j++ {
+			host := strings.TrimSpace(groups[i][j])
+			if host == "" {
+				return nil, errors.New("invalid host")
+			}
+			if !hostsMap[host] {
+				hosts = append(hosts, host)
+				hostsMap[host] = true
+			}
+		}
+	}
+
+	if len(hosts) == 0 {
+		return nil, errors.New("empty host list")
+	}
+	return hosts, nil
+}
+
+func (s *Scanner) Scan(ctx context.Context, hosts []string, ports []uint16) (<-chan Result, error) {
+	if ctx == nil {
+		return nil, errors.New("context must not be nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	mergeHost, err := MergeHosts(hosts)
+	if err != nil {
+		return nil, err
+	}
+	mergePort, err := MergePorts(ports)
+	if err != nil {
+		return nil, err
+	}
+
+	jobs := make(chan scanJob)
+	results := make(chan Result)
+
+	go func() {
+		defer close(jobs)
+		for i := 0; i < len(mergeHost); i++ {
+			if ctx.Err() != nil {
+				return
+			}
+			addresses, resolveErr := resolveHost(ctx, mergeHost[i])
+			for j := 0; j < len(mergePort); j++ {
+				if resolveErr != nil {
+					job := scanJob{host: mergeHost[i], port: mergePort[j], resolveErr: resolveErr}
+					select {
+					case jobs <- job:
+
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
+
+				for k := 0; k < len(addresses); k++ {
+					if ctx.Err() != nil {
+						return
+					}
+					job := scanJob{
+						host: mergeHost[i],
+						port: mergePort[j],
+						ip:   addresses[k].IP,
+					}
+					select {
+					case jobs <- job:
+
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < s.maxConcurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				if job.resolveErr != nil {
+					result := Result{Host: job.host, Port: job.port, IP: nil, State: classifyError(job.resolveErr), Err: job.resolveErr}
+					select {
+					case results <- result:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
+				result := s.validatePort(ctx, job.host, job.port, job.ip)
+				select {
+				case results <- result:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
 	return results, nil
 }
