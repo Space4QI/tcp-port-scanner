@@ -5,6 +5,9 @@ import (
 	"time"
 )
 
+// Result contains the outcome of a single TCP port check.
+// IP is nil if DNS resolution fails.
+// Err is nil when the connection succeeds.
 type Result struct {
 	Host     string
 	IP       net.IP
@@ -14,6 +17,7 @@ type Result struct {
 	Err      error
 }
 
+// State represents the outcome of a TCP connection attempt.
 type State string
 
 const (

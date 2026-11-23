@@ -13,9 +13,13 @@ import (
 	"time"
 )
 
+// Scanner performs concurrent TCP Connect port scanning.
+// It can be reused for multiple scans.
 type Scanner struct {
 	maxConcurrency int
 	timeout        time.Duration
+	dialFn         func(context.Context, string, string) (net.Conn, error)
+	resolveFn      func(context.Context, string) ([]net.IPAddr, error)
 }
 
 type scanJob struct {
@@ -25,6 +29,8 @@ type scanJob struct {
 	resolveErr error
 }
 
+// New creates a Scanner with the specified concurrency limit
+// and connection timeout. Both values must be greater than zero.
 func New(maxConcurrency int, timeout time.Duration) (*Scanner, error) {
 	if maxConcurrency <= 0 {
 		return nil, errors.New("maxConcurrency must be greater than zero")
@@ -40,11 +46,17 @@ func (s *Scanner) validatePort(ctx context.Context, host string, port uint16, ip
 	dialer := net.Dialer{
 		Timeout: s.timeout,
 	}
+	dial := dialer.DialContext
+	if s.dialFn != nil {
+		dial = s.dialFn
+	}
+
 	address := net.JoinHostPort(ip.String(), strconv.Itoa(int(port)))
 
 	start := time.Now()
-	conn, err := dialer.DialContext(ctx, "tcp", address)
+	conn, err := dial(ctx, "tcp", address)
 	duration := time.Since(start)
+
 	if err == nil {
 		conn.Close()
 		return Result{Host: host, Port: port, State: StateOpen, Duration: duration, IP: ip}
@@ -85,18 +97,8 @@ func resolveHost(ctx context.Context, host string) ([]net.IPAddr, error) {
 	return addresses, nil
 }
 
-func (s *Scanner) scanHostPort(ctx context.Context, host string, port uint16) ([]Result, error) {
-	addresses, err := resolveHost(ctx, host)
-	if err != nil {
-		return nil, err
-	}
-	results := []Result{}
-	for _, value := range addresses {
-		results = append(results, s.validatePort(ctx, host, port, value.IP))
-	}
-	return results, nil
-}
-
+// Range returns an inclusive range of TCP ports.
+// Both boundaries must be between 1 and 65535.
 func Range(start, end int) ([]uint16, error) {
 	if start < 1 || start > 65535 || end < 1 || end > 65535 {
 		return nil, errors.New("invalid port range")
@@ -112,6 +114,8 @@ func Range(start, end int) ([]uint16, error) {
 	return ports, nil
 }
 
+// MergePorts combines port lists, removes duplicates,
+// and rejects invalid or empty input.
 func MergePorts(groups ...[]uint16) ([]uint16, error) {
 	portsMap := make(map[uint16]bool)
 	ports := []uint16{}
@@ -135,6 +139,8 @@ func MergePorts(groups ...[]uint16) ([]uint16, error) {
 	return ports, nil
 }
 
+// MergeHosts combines host lists, trims whitespace,
+// removes duplicates, and rejects empty host values.
 func MergeHosts(groups ...[]string) ([]string, error) {
 	hostsMap := make(map[string]bool)
 	hosts := []string{}
@@ -158,6 +164,15 @@ func MergeHosts(groups ...[]string) ([]string, error) {
 	return hosts, nil
 }
 
+// Scan starts concurrent TCP Connect scanning for the given hosts and ports.
+// The concurrency limit applies to each Scan call.
+//
+// Results are delivered through a channel that closes when scanning finishes.
+// DNS and connection errors are reported in individual results.
+//
+// Canceling ctx stops further work and may discard pending results.
+// If the caller stops reading results early, it must cancel ctx
+// to allow scanning goroutines to terminate.
 func (s *Scanner) Scan(ctx context.Context, hosts []string, ports []uint16) (<-chan Result, error) {
 	if ctx == nil {
 		return nil, errors.New("context must not be nil")
@@ -177,13 +192,18 @@ func (s *Scanner) Scan(ctx context.Context, hosts []string, ports []uint16) (<-c
 	jobs := make(chan scanJob)
 	results := make(chan Result)
 
+	resolve := resolveHost
+	if s.resolveFn != nil {
+		resolve = s.resolveFn
+	}
+
 	go func() {
 		defer close(jobs)
 		for i := 0; i < len(mergeHost); i++ {
 			if ctx.Err() != nil {
 				return
 			}
-			addresses, resolveErr := resolveHost(ctx, mergeHost[i])
+			addresses, resolveErr := resolve(ctx, mergeHost[i])
 			for j := 0; j < len(mergePort); j++ {
 				if resolveErr != nil {
 					job := scanJob{host: mergeHost[i], port: mergePort[j], resolveErr: resolveErr}
