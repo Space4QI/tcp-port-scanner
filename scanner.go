@@ -16,6 +16,8 @@ import (
 type Scanner struct {
 	maxConcurrency int
 	timeout        time.Duration
+	dialFn         func(context.Context, string, string) (net.Conn, error)
+	resolveFn      func(context.Context, string) ([]net.IPAddr, error)
 }
 
 type scanJob struct {
@@ -40,11 +42,17 @@ func (s *Scanner) validatePort(ctx context.Context, host string, port uint16, ip
 	dialer := net.Dialer{
 		Timeout: s.timeout,
 	}
+	dial := dialer.DialContext
+	if s.dialFn != nil {
+		dial = s.dialFn
+	}
+
 	address := net.JoinHostPort(ip.String(), strconv.Itoa(int(port)))
 
 	start := time.Now()
-	conn, err := dialer.DialContext(ctx, "tcp", address)
+	conn, err := dial(ctx, "tcp", address)
 	duration := time.Since(start)
+
 	if err == nil {
 		conn.Close()
 		return Result{Host: host, Port: port, State: StateOpen, Duration: duration, IP: ip}
@@ -177,13 +185,18 @@ func (s *Scanner) Scan(ctx context.Context, hosts []string, ports []uint16) (<-c
 	jobs := make(chan scanJob)
 	results := make(chan Result)
 
+	resolve := resolveHost
+	if s.resolveFn != nil {
+		resolve = s.resolveFn
+	}
+
 	go func() {
 		defer close(jobs)
 		for i := 0; i < len(mergeHost); i++ {
 			if ctx.Err() != nil {
 				return
 			}
-			addresses, resolveErr := resolveHost(ctx, mergeHost[i])
+			addresses, resolveErr := resolve(ctx, mergeHost[i])
 			for j := 0; j < len(mergePort); j++ {
 				if resolveErr != nil {
 					job := scanJob{host: mergeHost[i], port: mergePort[j], resolveErr: resolveErr}
