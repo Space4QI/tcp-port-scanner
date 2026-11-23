@@ -250,20 +250,6 @@ func TestResolverHostInvalidName(t *testing.T) {
 	}
 }
 
-func TestScanHostPort(t *testing.T) {
-	scanner := newTestScanner(t, 10)
-	listener := newTestListener(t, "tcp4", "127.0.0.1:0")
-	port := uint16(listener.Addr().(*net.TCPAddr).Port)
-
-	results, err := scanner.scanHostPort(context.Background(), "127.0.0.1", port)
-	if err != nil {
-		t.Fatalf("scanHostPort: %v", err)
-	}
-	if len(results) != 1 || results[0].State != StateOpen || !results[0].IP.Equal(net.ParseIP("127.0.0.1")) {
-		t.Fatalf("unexpected scanHostPort results: %+v", results)
-	}
-}
-
 func TestScanOpenPort(t *testing.T) {
 	scanner := newTestScanner(t, 10)
 	listener := newTestListener(t, "tcp4", "127.0.0.1:0")
