@@ -46,6 +46,8 @@ func (s *Scanner) validatePort(ctx context.Context, host string, port uint16, ip
 	dialer := net.Dialer{
 		Timeout: s.timeout,
 	}
+	dialCtx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
 	dial := dialer.DialContext
 	if s.dialFn != nil {
 		dial = s.dialFn
@@ -54,7 +56,7 @@ func (s *Scanner) validatePort(ctx context.Context, host string, port uint16, ip
 	address := net.JoinHostPort(ip.String(), strconv.Itoa(int(port)))
 
 	start := time.Now()
-	conn, err := dial(ctx, "tcp", address)
+	conn, err := dial(dialCtx, "tcp", address)
 	duration := time.Since(start)
 
 	if err == nil {

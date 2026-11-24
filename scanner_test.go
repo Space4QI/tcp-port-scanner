@@ -1079,3 +1079,44 @@ func TestScanIPv6(t *testing.T) {
 		t.Fatalf("IPv6 scan did not finish before deadline: %v", err)
 	}
 }
+
+func TestValidatePortConfiguredTimeout(t *testing.T) {
+	scanner, err := New(1, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("failed to create scanner: %v", err)
+	}
+
+	scanner.dialFn = func(
+		ctx context.Context,
+		network string,
+		address string,
+	) (net.Conn, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		2*time.Second,
+	)
+	defer cancel()
+
+	result := scanner.validatePort(
+		ctx,
+		"127.0.0.1",
+		80,
+		net.ParseIP("127.0.0.1"),
+	)
+
+	if result.State != StateTimeout {
+		t.Fatalf("expected StateTimeout, got %s", result.State)
+	}
+
+	if !errors.Is(result.Err, context.DeadlineExceeded) {
+		t.Fatalf("expected deadline exceeded, got %v", result.Err)
+	}
+
+	if ctx.Err() != nil {
+		t.Fatalf("parent context expired unexpectedly: %v", ctx.Err())
+	}
+}
